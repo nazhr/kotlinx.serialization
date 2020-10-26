@@ -8,9 +8,6 @@
 package kotlinx.serialization
 
 import kotlinx.serialization.builtins.*
-import kotlinx.serialization.builtins.TripleSerializer
-import kotlinx.serialization.builtins.PairSerializer
-import kotlinx.serialization.builtins.MapEntrySerializer
 import kotlinx.serialization.internal.*
 import kotlinx.serialization.modules.*
 import kotlin.jvm.*
@@ -35,48 +32,64 @@ public inline fun <reified T> SerializersModule.serializer(): KSerializer<T> {
 /**
  * Creates a serializer for the given [type].
  * [type] argument can be obtained with experimental [typeOf] method.
+ *  @throws SerializationException if serializer cannot be created (provided [type] or its type argument is not serializable).
  */
 @OptIn(ExperimentalSerializationApi::class)
-public fun serializer(type: KType): KSerializer<Any?> {
-    val result = EmptySerializersModule.serializerByKTypeImpl(type) ?: type.kclass().platformSpecificSerializerNotRegistered()
-    return result.nullable(type.isMarkedNullable)
-}
+public fun serializer(type: KType): KSerializer<Any?> = EmptySerializersModule.serializer(type)
+
+/**
+ * Creates a serializer for the given [type].
+ * [type] argument can be obtained with experimental [typeOf] method.
+ * Returns `null` if serializer cannot be created (provided [type] or its type argument is not serializable).
+ */
+@OptIn(ExperimentalSerializationApi::class)
+public fun serializerOrNull(type: KType): KSerializer<Any?>? = EmptySerializersModule.serializerOrNull(type)
 
 /**
  * Attempts to create a serializer for the given [type] and fallbacks to [contextual][SerializersModule.getContextual]
  * lookup for non-serializable types.
  * [type] argument can be obtained with experimental [typeOf] method.
+ * @throws SerializationException if serializer cannot be created (provided [type] or its type argument is not serializable and is not registered in [this] module).
  */
 @OptIn(ExperimentalSerializationApi::class)
-public fun SerializersModule.serializer(type: KType): KSerializer<Any?> {
-    val kclass = type.kclass()
-    val isNullable = type.isMarkedNullable
-    val builtin = serializerByKTypeImpl(type)
-    if (builtin != null) {
-        return builtin.nullable(isNullable).cast()
-    }
+public fun SerializersModule.serializer(type: KType): KSerializer<Any?> =
+    serializerByKTypeImpl(type, checkTypeArgs = true) ?: type.kclass().platformSpecificSerializerNotRegistered()
 
-    return getContextual(kclass)?.nullable(isNullable)?.cast() ?: type.kclass().platformSpecificSerializerNotRegistered()
+/**
+ * Attempts to create a serializer for the given [type] and fallbacks to [contextual][SerializersModule.getContextual]
+ * lookup for non-serializable types.
+ * [type] argument can be obtained with experimental [typeOf] method.
+ * Returns `null` if serializer cannot be created (provided [type] or its type argument is not serializable and is not registered in [this] module).
+ */
+@OptIn(ExperimentalSerializationApi::class)
+public fun SerializersModule.serializerOrNull(type: KType): KSerializer<Any?>? {
+    return serializerByKTypeImpl(type, checkTypeArgs = false)
 }
 
 @OptIn(ExperimentalSerializationApi::class)
-private fun SerializersModule.serializerByKTypeImpl(type: KType): KSerializer<Any>? {
+private fun SerializersModule.serializerByKTypeImpl(type: KType, checkTypeArgs: Boolean): KSerializer<Any?>? {
     val rootClass = type.kclass()
+    val isNullable = type.isMarkedNullable
     val typeArguments = type.arguments
         .map { requireNotNull(it.type) { "Star projections in type arguments are not allowed, but had $type" } }
-    return when {
+    val result: KSerializer<Any>? = when {
         typeArguments.isEmpty() -> rootClass.serializerOrNull() ?: getContextual(rootClass)
-        else -> builtinSerializerOrNull(typeArguments, rootClass)
+        else -> builtinSerializer(typeArguments, rootClass, checkTypeArgs)
     }?.cast()
+    return result?.nullable(isNullable)
 }
 
 @OptIn(ExperimentalSerializationApi::class)
-private fun SerializersModule.builtinSerializerOrNull(
+private fun SerializersModule.builtinSerializer(
     typeArguments: List<KType>,
-    rootClass: KClass<Any>
+    rootClass: KClass<Any>,
+    checkTypeArgs: Boolean
 ): KSerializer<out Any>? {
-    val serializers = typeArguments
-        .map(::serializer)
+    val serializers = if (checkTypeArgs)
+        typeArguments.map(::serializer)
+    else {
+        typeArguments.map { serializerOrNull(it) ?: return null }
+    }
     // Array is not supported, see KT-32839
     return when (rootClass) {
         List::class, MutableList::class, ArrayList::class -> ArrayListSerializer(serializers[0])
@@ -94,10 +107,7 @@ private fun SerializersModule.builtinSerializerOrNull(
             if (isReferenceArray(rootClass)) {
                 return ArraySerializer<Any, Any?>(typeArguments[0].classifier as KClass<Any>, serializers[0]).cast()
             }
-            requireNotNull(rootClass.constructSerializerForGivenTypeArgs(*serializers.toTypedArray())) {
-                "Can't find a method to construct serializer for type ${rootClass.simpleName}. " +
-                        "Make sure this class is marked as @Serializable or provide serializer explicitly."
-            }
+            rootClass.constructSerializerForGivenTypeArgs(*serializers.toTypedArray())
         }
     }
 }

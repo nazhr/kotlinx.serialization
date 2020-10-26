@@ -6,9 +6,7 @@ package kotlinx.serialization
 
 import kotlinx.serialization.builtins.*
 import kotlinx.serialization.descriptors.*
-import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.*
-import kotlinx.serialization.internal.*
 import kotlinx.serialization.json.*
 import kotlinx.serialization.modules.*
 import kotlinx.serialization.test.*
@@ -205,6 +203,29 @@ class SerializersLookupTest : JsonTestBase() {
         val json = Json { serializersModule = SerializersModule { contextual(contextual) } }
         assertEquals("[[1]]", json.encodeToString(listOf(listOf<Int>(1))))
         assertEquals("42", json.encodeToString(42))
+    }
+
+    class NonSerializable
+
+    class NonSerializableBox<T>(val boxed: T)
+
+    @Test
+    fun testLookupFail() {
+        assertNull(serializerOrNull(typeOf<NonSerializable>()))
+        assertNull(serializerOrNull(typeOf<NonSerializableBox<String>>()))
+        assertNull(serializerOrNull(typeOf<Box<NonSerializable>>()))
+
+        assertFailsWithMessage<SerializationException>("for class 'NonSerializable'") {
+            serializer(typeOf<NonSerializable>())
+        }
+
+        assertFailsWithMessage<SerializationException>("for class 'NonSerializableBox'") {
+            serializer(typeOf<NonSerializableBox<String>>())
+        }
+
+        assertFailsWithMessage<SerializationException>("for class 'NonSerializable'") {
+            serializer(typeOf<Box<NonSerializable>>())
+        }
     }
 
     // Tests with [constructSerializerForGivenTypeArgs] are unsupported on legacy Kotlin/JS
